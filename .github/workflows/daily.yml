@@ -1,4 +1,4 @@
-name: 申万菱信债基每日收蛋文案
+name: 申万菱信债基每日收蛋
 
 on:
   schedule:
@@ -34,7 +34,7 @@ jobs:
             EXIT_CODE=$?
 
             if [ $EXIT_CODE -eq 0 ]; then
-              echo "✅ 成功生成并推送文案"
+              echo "✅ 成功生成文案并更新 egg-data.json"
               exit 0
             elif [ $EXIT_CODE -eq 2 ]; then
               echo "⏳ 净值数据尚未更新，等待 ${RETRY_INTERVAL}秒后重试..."
@@ -57,3 +57,16 @@ jobs:
           url = f'{webhook}&timestamp={timestamp}&sign={sign}'
           requests.post(url, json={'msgtype':'text','text':{'content':'⚠️ 今晚净值数据延迟更新，截至20:30尚未获取到今日数据，请手动检查。'}})
           "
+
+      - name: 提交 egg-data.json 更新
+        if: success()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add egg-data.json
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "📊 更新收蛋数据 $(date +%Y-%m-%d)"
+            git push
+          fi

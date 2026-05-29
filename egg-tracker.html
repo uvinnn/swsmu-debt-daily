@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>小顾家债基收蛋日报</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    :root {
+      --red: #D94F4F;
+      --red-light: #F8ECEC;
+      --red-dark: #B83333;
+      --gold: #F5A623;
+      --gold-light: #FFF8E7;
+      --gray: #666;
+      --gray-light: #F5F5F5;
+      --border: #E8E8E8;
+      --text: #1A1A1A;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+      background: #F2F2F7;
+      color: var(--text);
+      min-height: 100vh;
+    }
+    .header {
+      background: linear-gradient(135deg, #C0392B 0%, #D94F4F 60%, #E8724A 100%);
+      padding: 20px 16px 24px;
+      text-align: center;
+    }
+    .header-title { font-size: 20px; font-weight: 700; color: #fff; letter-spacing: 1px; }
+    .header-sub { font-size: 13px; color: rgba(255,255,255,0.8); margin-top: 4px; }
+    .header-egg { font-size: 32px; margin-bottom: 8px; }
+    .status-bar {
+      margin: -12px 16px 0;
+      background: #fff;
+      border-radius: 12px;
+      padding: 12px 16px;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.08);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: relative;
+      z-index: 1;
+    }
+    .status-date { font-size: 13px; color: var(--gray); }
+    .status-date strong { color: var(--text); font-size: 14px; }
+    .refresh-btn {
+      background: var(--red); color: #fff; border: none; border-radius: 20px;
+      padding: 6px 16px; font-size: 13px; font-weight: 600; cursor: pointer;
+      display: flex; align-items: center; gap: 4px; transition: background 0.2s;
+    }
+    .refresh-btn:hover { background: var(--red-dark); }
+    .refresh-btn.loading { opacity: 0.7; pointer-events: none; }
+    .spin { display: inline-block; animation: spin 1s linear infinite; }
+    @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+    .hint-box {
+      margin: 12px 16px 0; background: #FFF8E1; border: 1px solid #FFD54F;
+      border-radius: 10px; padding: 10px 14px; font-size: 13px; color: #7C5C00; display: none;
+    }
+    .section { margin: 14px 16px 0; }
+    .section-title {
+      font-size: 12px; color: var(--gray); font-weight: 600;
+      letter-spacing: 0.5px; margin-bottom: 8px; padding-left: 2px;
+    }
+    .ranking-card {
+      background: #fff; border-radius: 14px; overflow: hidden;
+      box-shadow: 0 1px 8px rgba(0,0,0,0.06);
+    }
+    .ranking-item {
+      display: flex; align-items: center; padding: 13px 16px;
+      border-bottom: 1px solid var(--border); gap: 12px;
+    }
+    .ranking-item:last-child { border-bottom: none; }
+    .rank-badge {
+      width: 26px; height: 26px; border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 12px; font-weight: 700; flex-shrink: 0;
+    }
+    .rank-1 { background: #FFD700; color: #7C5200; }
+    .rank-2 { background: #C0C0C0; color: #444; }
+    .rank-3 { background: #CD7F32; color: #fff; }
+    .rank-other { background: var(--gray-light); color: var(--gray); font-size: 11px; }
+    .fund-name { flex: 1; font-size: 14px; font-weight: 600; }
+    .fund-code { font-size: 11px; color: #999; font-weight: 400; }
+    .fund-change { font-size: 13px; font-weight: 600; text-align: right; min-width: 52px; }
+    .up { color: var(--red); }
+    .down { color: #00A854; }
+    .flat { color: #999; }
+    .egg-count {
+      background: var(--red-light); color: var(--red); border-radius: 20px;
+      padding: 3px 10px; font-size: 13px; font-weight: 700;
+      min-width: 52px; text-align: center; flex-shrink: 0;
+    }
+    .egg-count.zero { background: var(--gray-light); color: var(--gray); }
+    .total-card {
+      background: linear-gradient(135deg, var(--red-light), var(--gold-light));
+      border-radius: 14px; padding: 14px 16px;
+      display: flex; align-items: center; justify-content: space-between;
+      box-shadow: 0 1px 8px rgba(0,0,0,0.06);
+    }
+    .total-label { font-size: 13px; color: var(--gray); }
+    .total-eggs { font-size: 28px; font-weight: 800; color: var(--red); }
+    .total-eggs span { font-size: 14px; }
+    .copy-card {
+      background: #fff; border-radius: 14px; overflow: hidden;
+      box-shadow: 0 1px 8px rgba(0,0,0,0.06);
+    }
+    .copy-preview {
+      padding: 14px 16px; font-size: 13px; line-height: 1.8;
+      color: #333; white-space: pre-wrap; border-bottom: 1px solid var(--border);
+      max-height: 300px; overflow-y: auto;
+    }
+    .copy-btn {
+      width: 100%; padding: 14px; background: var(--red); color: #fff;
+      border: none; font-size: 15px; font-weight: 700; cursor: pointer;
+      transition: background 0.2s; letter-spacing: 0.5px;
+    }
+    .copy-btn:hover { background: var(--red-dark); }
+    .copy-btn:active { transform: scale(0.98); }
+    .copy-btn.success { background: #00A854; }
+    .history-card {
+      background: #fff; border-radius: 14px; overflow: hidden;
+      box-shadow: 0 1px 8px rgba(0,0,0,0.06);
+    }
+    .history-item {
+      padding: 12px 16px; border-bottom: 1px solid var(--border);
+      cursor: pointer; display: flex; justify-content: space-between; align-items: center;
+    }
+    .history-item:last-child { border-bottom: none; }
+    .history-item:hover { background: var(--gray-light); }
+    .history-date { font-size: 13px; font-weight: 600; }
+    .history-total { font-size: 12px; color: var(--red); font-weight: 700; }
+    .history-arrow { color: #ccc; font-size: 12px; }
+    .history-top { font-size: 11px; color: #999; margin-top: 2px; }
+    .empty-hint { text-align: center; padding: 24px; color: #bbb; font-size: 13px; }
+    .tabs {
+      display: flex; background: #fff; margin: 14px 16px 0;
+      border-radius: 10px; padding: 4px;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+    }
+    .tab-btn {
+      flex: 1; padding: 8px; border: none; background: none;
+      border-radius: 8px; font-size: 13px; font-weight: 600;
+      color: var(--gray); cursor: pointer; transition: all 0.2s;
+    }
+    .tab-btn.active { background: var(--red); color: #fff; }
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
+    .footer {
+      text-align: center; padding: 20px 16px 30px;
+      font-size: 11px; color: #bbb;
+    }
+  </style>
+</head>
+<body>
+
+<div class="header">
+  <div class="header-egg">🥚</div>
+  <div class="header-title">小顾家 · 债基收蛋日报</div>
+  <div class="header-sub">申万菱信 · 8只精选债基</div>
+</div>
+
+<div class="status-bar">
+  <div class="status-date">
+    净值日期：<strong id="statusDate">加载中...</strong>
+  </div>
+  <button class="refresh-btn" id="refreshBtn" onclick="refresh()">
+    <span id="refreshIcon">↻</span> 刷新
+  </button>
+</div>
+
+<div class="hint-box" id="hintBox"></div>
+
+<div class="tabs">
+  <button class="tab-btn active" onclick="switchTab('today')">📊 今日排行</button>
+  <button class="tab-btn" onclick="switchTab('copy')">📋 复制文案</button>
+  <button class="tab-btn" onclick="switchTab('history')">📅 历史记录</button>
+</div>
+
+<!-- Today Tab -->
+<div class="tab-panel active" id="tab-today">
+  <div class="section">
+    <div class="section-title">今日总收蛋</div>
+    <div class="total-card">
+      <div>
+        <div class="total-label">8只债基今日共收</div>
+        <div style="font-size:11px;color:#bbb;margin-top:2px;">1bp = 1蛋</div>
+      </div>
+      <div class="total-eggs" id="totalEggs">-- <span>🥚</span></div>
+    </div>
+  </div>
+  <div class="section" style="margin-bottom:0;">
+    <div class="section-title">收蛋排行榜</div>
+    <div class="ranking-card" id="rankingList">
+      <div class="empty-hint">加载中...</div>
+    </div>
+  </div>
+</div>
+
+<!-- Copy Tab -->
+<div class="tab-panel" id="tab-copy">
+  <div class="section" style="margin-bottom:0;">
+    <div class="section-title">收蛋文案（按排名排序）</div>
+    <div class="copy-card">
+      <div class="copy-preview" id="copyPreview">加载中...</div>
+      <button class="copy-btn" id="copyBtn" onclick="copyText()">📋 一键复制文案</button>
+    </div>
+  </div>
+</div>
+
+<!-- History Tab -->
+<div class="tab-panel" id="tab-history">
+  <div class="section" style="margin-bottom:0;">
+    <div class="section-title">历史收蛋</div>
+    <div class="history-card" id="historyList">
+      <div class="empty-hint">加载中...</div>
+    </div>
+  </div>
+</div>
+
+<div class="footer">
+  数据来源：天天基金 | 每日约 20:00 自动更新
+</div>
+
+<script>
+// ============ 全局状态 ============
+var allRecords = [];
+var currentRecord = null;
+
+// ============ 初始化 ============
+window.onload = function() { loadData(); };
+
+// ============ Tab 切换 ============
+function switchTab(name) {
+  document.querySelectorAll('.tab-panel').forEach(function(p) { p.classList.remove('active'); });
+  document.querySelectorAll('.tab-btn').forEach(function(b) { b.classList.remove('active'); });
+  document.getElementById('tab-' + name).classList.add('active');
+  event.target.classList.add('active');
+}
+
+// ============ 加载数据 ============
+function loadData() {
+  fetch('egg-data.json', { cache: 'no-cache' })
+    .then(function(res) {
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      return res.json();
+    })
+    .then(function(json) {
+      allRecords = json.records || [];
+      if (allRecords.length === 0) { showEmpty(); return; }
+      currentRecord = allRecords[0];
+      renderAll(currentRecord);
+      renderHistory();
+      var today = getTodayStr();
+      if (currentRecord.date !== today) {
+        showHint('⚠️ 最新数据为 ' + formatDate(currentRecord.date) + '，今日净值暂未更新（通常 20:00 后发布）');
+      }
+    })
+    .catch(function() {
+      showEmpty();
+      showHint('⚠️ 暂无数据，请稍后刷新');
+    });
+}
+
+function refresh() {
+  var btn = document.getElementById('refreshBtn');
+  var icon = document.getElementById('refreshIcon');
+  btn.classList.add('loading');
+  icon.classList.add('spin');
+  loadData();
+  setTimeout(function() {
+    btn.classList.remove('loading');
+    icon.classList.remove('spin');
+  }, 2000);
+}
+
+function showEmpty() {
+  document.getElementById('statusDate').textContent = '暂无数据';
+  document.getElementById('totalEggs').innerHTML = '-- <span>🥚</span>';
+  document.getElementById('rankingList').innerHTML = '<div class="empty-hint">暂无数据</div>';
+  document.getElementById('copyPreview').textContent = '暂无数据';
+  document.getElementById('historyList').innerHTML = '<div class="empty-hint">暂无历史记录</div>';
+}
+
+// ============ 渲染 ============
+function renderAll(record) {
+  document.getElementById('statusDate').textContent = formatDate(record.nav_date || record.date);
+
+  var results = record.results;
+  var total = 0;
+  results.forEach(function(r) { if (r.eggs > 0) total += r.eggs; });
+  document.getElementById('totalEggs').innerHTML = total + ' <span>🥚</span>';
+
+  // 排行榜
+  document.getElementById('rankingList').innerHTML = results.map(function(r, i) {
+    var rank = i + 1;
+    var rankClass = rank <= 3 ? 'rank-' + rank : 'rank-other';
+    var rankText = rank <= 3 ? ['🥇','🥈','🥉'][rank-1] : rank;
+    var changeStr = r.change || '0%';
+    var pct = parseFloat(changeStr);
+    var changeClass = pct > 0 ? 'up' : pct < 0 ? 'down' : 'flat';
+    var eggClass = r.eggs <= 0 ? 'zero' : '';
+    var eggText = r.eggs > 0 ? r.eggs + '🥚' : r.eggs === 0 ? '0蛋' : Math.abs(r.eggs) + '蛋';
+
+    return '<div class="ranking-item">' +
+      '<div class="rank-badge ' + rankClass + '">' + rankText + '</div>' +
+      '<div style="flex:1;">' +
+        '<div class="fund-name">' + r.name + '</div>' +
+        '<div class="fund-code">' + r.code + '</div>' +
+      '</div>' +
+      '<div class="fund-change ' + changeClass + '">' + changeStr + '</div>' +
+      '<div class="egg-count ' + eggClass + '">' + eggText + '</div>' +
+    '</div>';
+  }).join('');
+
+  // 文案
+  document.getElementById('copyPreview').textContent = record.copy || generateCopy(results, record.date);
+}
+
+function generateCopy(results, date) {
+  var d = date.split('-');
+  var dateStr = d[0] + '年' + parseInt(d[1]) + '月' + parseInt(d[2]) + '日';
+  var lines = results.map(function(r) { return '【' + r.name + '】收' + r.eggs + '蛋；'; });
+  return '💡闲钱理财债短情长，小顾家的债基今天也来给大家加加油！\n\n' +
+    lines.join('\n') + '\n\n' +
+    '📚讨论区活动福利多多，小伙伴们关注起来！\n' +
+    '💖欢迎大家持续关注~\n\n' +
+    '（数据来源：天天基金，净值日期：' + dateStr + '）';
+}
+
+// ============ 历史记录 ============
+function renderHistory() {
+  var container = document.getElementById('historyList');
+  if (!allRecords || allRecords.length === 0) {
+    container.innerHTML = '<div class="empty-hint">暂无历史记录</div>';
+    return;
+  }
+  container.innerHTML = allRecords.map(function(r) {
+    var top = r.results && r.results.length > 0 ? r.results[0] : null;
+    var topText = top ? top.name + ' ' + top.eggs + '蛋' : '';
+    return '<div class="history-item" onclick="showHistory(\'' + r.date + '\')">' +
+      '<div>' +
+        '<div class="history-date">' + formatDate(r.date) + '</div>' +
+        '<div class="history-top">🏆 ' + topText + '</div>' +
+      '</div>' +
+      '<div style="display:flex;align-items:center;gap:8px;">' +
+        '<div class="history-total">' + (r.total || 0) + '🥚</div>' +
+        '<div class="history-arrow">›</div>' +
+      '</div>' +
+    '</div>';
+  }).join('');
+}
+
+function showHistory(date) {
+  var record = allRecords.find(function(r) { return r.date === date; });
+  if (!record) return;
+  currentRecord = record;
+  renderAll(record);
+  switchTab('today');
+  document.getElementById('hintBox').style.display = 'none';
+  showHint('📅 正在查看 ' + formatDate(date) + ' 的历史数据。刷新页面回到最新数据。');
+}
+
+// ============ 复制文案 ============
+function copyText() {
+  if (!currentRecord) return;
+  var text = currentRecord.copy || generateCopy(currentRecord.results, currentRecord.date);
+  var btn = document.getElementById('copyBtn');
+  try {
+    navigator.clipboard.writeText(text).then(function() {
+      btn.textContent = '✅ 已复制！'; btn.classList.add('success');
+      setTimeout(function() { btn.textContent = '📋 一键复制文案'; btn.classList.remove('success'); }, 2000);
+    });
+  } catch(e) {
+    var ta = document.createElement('textarea');
+    ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.select(); document.execCommand('copy');
+    document.body.removeChild(ta);
+    btn.textContent = '✅ 已复制！'; btn.classList.add('success');
+    setTimeout(function() { btn.textContent = '📋 一键复制文案'; btn.classList.remove('success'); }, 2000);
+  }
+}
+
+// ============ 工具函数 ============
+function getTodayStr() {
+  var t = new Date();
+  return t.getFullYear() + '-' +
+    String(t.getMonth()+1).padStart(2,'0') + '-' +
+    String(t.getDate()).padStart(2,'0');
+}
+
+function formatDate(dateStr) {
+  if (!dateStr) return '--';
+  var d = dateStr.split('-');
+  return d[0] + '年' + parseInt(d[1]) + '月' + parseInt(d[2]) + '日';
+}
+
+function showHint(msg) {
+  var box = document.getElementById('hintBox');
+  box.textContent = msg;
+  box.style.display = 'block';
+}
+</script>
+</body>
+</html>
