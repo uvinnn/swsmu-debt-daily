@@ -5,20 +5,12 @@ on:
     # 北京时间每天 20:00（UTC 12:00）
     - cron: '0 12 * * *'
   workflow_dispatch:  # 允许手动触发
-  push:
-    branches: [main]
-    paths:
-      - 'egg-tracker.html'
-      - 'egg-data.json'
-
 jobs:
   run:
     runs-on: ubuntu-latest
     timeout-minutes: 35
     permissions:
       contents: write
-      pages: write
-      id-token: write
 
     steps:
       - name: 检出代码
@@ -84,15 +76,3 @@ requests.post(url, json={'msgtype':'text','text':{'content':'⚠️ 今晚净值
             git push
           fi
 
-      - name: 部署 GitHub Pages
-        if: steps.run_script.outputs.DATA_READY == 'true'
-        uses: peaceiris/actions-gh-pages@v4
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: .
-          publish_branch: gh-pages
-          keep_files: false
-          enable_jekyll: false
-          user_name: 'github-actions[bot]'
-          user_email: 'github-actions[bot]@users.noreply.github.com'
-          commit_message: '📊 更新收蛋数据 ${{ github.event.head_commit.message }}'
