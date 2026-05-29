@@ -241,7 +241,16 @@ function switchTab(name) {
 
 // ============ 加载数据 ============
 function loadData() {
-  fetch('egg-data.json', { cache: 'no-cache' })
+  // 优先从 GitHub raw 读取（GitHub Actions 更新后立即生效），本地文件兜底
+  var sources = [
+    'https://raw.githubusercontent.com/uvinnn/swsmu-debt-daily/main/egg-data.json',
+    'egg-data.json'
+  ];
+  tryLoad(0);
+
+  function tryLoad(i) {
+    if (i >= sources.length) { showEmpty(); showHint('⚠️ 暂无数据，请稍后刷新'); return; }
+    fetch(sources[i], { cache: 'no-cache' })
     .then(function(res) {
       if (!res.ok) throw new Error('HTTP ' + res.status);
       return res.json();
@@ -258,9 +267,10 @@ function loadData() {
       }
     })
     .catch(function() {
-      showEmpty();
-      showHint('⚠️ 暂无数据，请稍后刷新');
+      // 当前源失败，尝试下一个
+      tryLoad(i + 1);
     });
+  }
 }
 
 function refresh() {
