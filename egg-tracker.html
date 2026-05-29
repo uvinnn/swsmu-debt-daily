@@ -241,8 +241,9 @@ function switchTab(name) {
 
 // ============ 加载数据 ============
 function loadData() {
-  // 优先从 GitHub raw 读取（GitHub Actions 更新后立即生效），本地文件兜底
+  // 优先从 jsDelivr CDN 读取（GitHub push 后自动刷新），本地文件兜底
   var sources = [
+    'https://cdn.jsdelivr.net/gh/uvinnn/swsmu-debt-daily@main/egg-data.json',
     'https://raw.githubusercontent.com/uvinnn/swsmu-debt-daily/main/egg-data.json',
     'egg-data.json'
   ];
