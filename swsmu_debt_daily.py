@@ -240,15 +240,55 @@ def update_egg_data(egg_results, nav_date, copy_text):
     print(f"✅ egg-data.json 已更新（共 {len(records)} 条记录）")
 
 
+def is_trading_day(check_date):
+    """
+    判断是否为A股交易日。
+    - 周六/周日直接返回 False
+    - 其余通过 timor.club 节假日 API 确认是否为节假日
+    - API 不可用时，回退到仅跳过周末（宁可多发不漏发）
+    """
+    # 先排除周末
+    if check_date.weekday() >= 5:  # 5=周六, 6=周日
+        return False
+
+    # 查询节假日 API（timor.club，免费，无需 key）
+    try:
+        date_str = check_date.strftime("%Y%m%d")
+        url = f"https://timor.tech/api/holiday/info/{date_str}"
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        # type: 0=工作日, 1=周末, 2=节假日, 3=调休（本是休息日但需上班）
+        day_type = data.get("type", {}).get("type")
+        if day_type == 3:
+            # 调休工作日（本是周末但要上班），债基正常交易
+            return True
+        if day_type in (1, 2):
+            # 周末或法定节假日
+            return False
+        # type==0 或 API 返回异常，视为工作日
+        return True
+    except Exception as e:
+        print(f"  ⚠️ 节假日 API 查询失败 ({e})，按工作日处理")
+        return True
+
+
 def main():
+    today = date.today()
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 开始抓取基金净值数据...")
+
+    # 非交易日直接退出（不发钉钉，不更新数据）
+    if not is_trading_day(today):
+        weekday_name = ["周一","周二","周三","周四","周五","周六","周日"][today.weekday()]
+        print(f"📅 今天是 {today.strftime('%Y-%m-%d')} {weekday_name}，非交易日，跳过执行。")
+        sys.exit(0)
 
     all_data, showday = fetch_fund_data()
     print(f"  获取到 {len(all_data)} 条基金数据")
     print(f"  净值日期: {showday}")
 
     latest_nav_date = showday[0] if showday else "未知"
-    today_str = date.today().strftime("%Y-%m-%d")
+    today_str = today.strftime("%Y-%m-%d")
 
     egg_results = []
     missing = []
