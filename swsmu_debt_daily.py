@@ -241,10 +241,6 @@ def run_with_retry():
     - 其他 exit code：脚本异常，直接退出
     截止后仍失败则发钉钉告警并退出（exit code=3）
     """
-    import subprocess
-
-    python_exe = sys.executable
-    script_path = os.path.abspath(__file__)
     retry_interval = 300  # 5 分钟
 
     attempt = 0
@@ -253,11 +249,15 @@ def run_with_retry():
         now = datetime.now()
         print(f"\n[重试模式] === 第 {attempt} 次尝试 {now.strftime('%Y-%m-%d %H:%M:%S')} ===")
 
-        result = subprocess.run(
-            [python_exe, script_path],
-            capture_output=False
-        )
-        code = result.returncode
+        # 直接调用 main 函数（而非子进程），用 try/except 捕获 SystemExit
+        code = 0
+        try:
+            main()
+        except SystemExit as e:
+            code = e.code if e.code is not None else 1
+        except Exception as e:
+            print(f"[重试模式] ❌ 脚本异常: {e}")
+            sys.exit(1)
 
         if code == 0:
             print("[重试模式] ✅ 成功！")
