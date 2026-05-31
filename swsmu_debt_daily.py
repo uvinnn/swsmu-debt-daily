@@ -265,10 +265,8 @@ def run_with_retry():
         elif code == 2:
             # 计算截止时间（当天 20:30）
             cutoff = now.replace(hour=20, minute=30, second=0, microsecond=0)
-            next_try = datetime.now()
-            next_try_time = next_try.timestamp() + retry_interval
 
-            if datetime.fromtimestamp(next_try_time) > cutoff:
+            if now > cutoff:
                 print(f"[重试模式] ⏰ 已到 20:30 截止，放弃重试")
                 _send_dingtalk_warning()
                 sys.exit(3)
