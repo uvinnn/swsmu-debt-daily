@@ -241,12 +241,12 @@ function switchTab(name) {
 
 // ============ 加载数据 ============
 function loadData() {
-  // 优先从 jsDelivr CDN 读取，加版本号强制 CDN 回源
-  var version = new Date().toISOString().slice(0, 10); // 每天自动变
+  // 优先从同域名读取（GitHub Pages），避免 CDN 缓存
+  var ts = Date.now();
   var sources = [
-    'https://cdn.jsdelivr.net/gh/uvinnn/swsmu-debt-daily@main/egg-data.json?v=' + version,
-    'https://raw.githubusercontent.com/uvinnn/swsmu-debt-daily/main/egg-data.json?v=' + Date.now(),
-    'egg-data.json?v=' + Date.now()
+    'egg-data.json?v=' + ts,
+    'https://raw.githubusercontent.com/uvinnn/swsmu-debt-daily/main/egg-data.json?v=' + ts,
+    'https://cdn.jsdelivr.net/gh/uvinnn/swsmu-debt-daily@main/egg-data.json?v=' + ts
   ];
   tryLoad(0);
 
