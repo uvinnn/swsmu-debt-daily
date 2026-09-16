@@ -57,6 +57,10 @@ DINGTALK_SECRET = os.environ.get("DINGTALK_SECRET", "")
 # egg-data.json 路径
 EGG_DATA_PATH = "egg-data.json"
 
+# --copy-only / COPY_ONLY=1：控制台只输出口播文案（对话里只要这段，不打印日报卡片预览）
+# 注意：只影响控制台输出，钉钉仍然照常推「口播 + 日报」两条
+COPY_ONLY = "--copy-only" in sys.argv or os.environ.get("COPY_ONLY") == "1"
+
 
 def fetch_fund_data():
     """从天天基金 API 抓取申万菱信全部基金净值数据。"""
@@ -512,10 +516,13 @@ def main():
 
     # 钉钉推送（同一天同一份净值只推一次；上次缺产品的日报允许补推完整版）
     title, report_md = build_daily_report(egg_results, latest_nav_date, no_nav)
-    print("\n----- 钉钉推送预览（2 条）-----")
-    print(f"① 口播文案（text）\n{copy}\n")
-    print(f"② 收蛋日报（markdown）\n{report_md}")
-    print("-------------------------------")
+
+    # --copy-only：只在控制台输出口播文案（对话里只要这段），不打印日报卡片预览
+    if not COPY_ONLY:
+        print("\n----- 钉钉推送预览（2 条）-----")
+        print(f"① 口播文案（text）\n{copy}\n")
+        print(f"② 收蛋日报（markdown）\n{report_md}")
+        print("-------------------------------")
 
     if already_pushed_today(latest_nav_date):
         print("⏭️ 今日该净值已推送过完整日报，跳过推送（如需强制推送请设 FORCE_PUSH=1）")
