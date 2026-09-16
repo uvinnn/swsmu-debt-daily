@@ -199,10 +199,10 @@ def build_copy(egg_results):
     return TEMPLATE.format(product_list="\n".join(lines))
 
 
-def _dingtalk_post(payload):
+def _dingtalk_post(payload, label="钉钉"):
     """通过钉钉群机器人发送消息（加签模式），payload 为完整消息体 dict"""
     if not DINGTALK_WEBHOOK or not DINGTALK_SECRET:
-        print("⚠️ 未配置钉钉 Webhook，跳过推送")
+        print(f"⚠️ 未配置钉钉 Webhook，跳过推送（{label}）")
         return False
 
     timestamp = str(round(time.time() * 1000))
@@ -222,10 +222,10 @@ def _dingtalk_post(payload):
     with urllib.request.urlopen(req, timeout=15) as resp:
         result = json.loads(resp.read().decode('utf-8'))
         if result.get("errcode") == 0:
-            print("✅ 钉钉推送成功")
+            print(f"✅ {label}推送成功")
             return True
         else:
-            print(f"❌ 钉钉推送失败: {result}")
+            print(f"❌ {label}推送失败: {result}")
             return False
 
 
@@ -270,6 +270,28 @@ def build_daily_report(egg_results, nav_date, no_nav=None):
 
     title = f"🐔 收蛋日报 | {nav_date}"
     return title, md
+
+
+def push_dingtalk_daily(copy_text, title, report_md):
+    """
+    钉钉分两条推送：
+      ① 口播文案（纯文本，原样可复制，直接贴到蚂蚁财富号投放）
+      ② 收蛋日报卡片（markdown，带日期/合计/涨跌标识/跳转 H5）
+    """
+    ok_copy = _dingtalk_post(
+        {"msgtype": "text", "text": {"content": copy_text}},
+        label="①口播文案",
+    )
+    ok_report = _dingtalk_post(
+        {"msgtype": "markdown", "markdown": {"title": title, "text": report_md}},
+        label="②收蛋日报",
+    )
+    if ok_copy and ok_report:
+        print("✅ 两条消息均已推送（口播文案 + 收蛋日报）")
+    else:
+        print(f"⚠️ 推送结果：口播文案 {'成功' if ok_copy else '失败'}，"
+              f"收蛋日报 {'成功' if ok_report else '失败'}")
+    return ok_copy and ok_report
 
 
 def already_pushed_today(nav_date):
@@ -488,17 +510,17 @@ def main():
     print(copy)
     print("=" * 50)
 
-    # 钉钉推送「收蛋日报」卡片
+    # 钉钉推送（同一天同一份净值只推一次；上次缺产品的日报允许补推完整版）
     title, report_md = build_daily_report(egg_results, latest_nav_date, no_nav)
-    print("\n----- 钉钉收蛋日报预览 -----")
-    print(report_md)
-    print("---------------------------")
+    print("\n----- 钉钉推送预览（2 条）-----")
+    print(f"① 口播文案（text）\n{copy}\n")
+    print(f"② 收蛋日报（markdown）\n{report_md}")
+    print("-------------------------------")
 
-    # 1. 推送到钉钉（同一天同一份净值只推一次；上次缺产品的日报允许补推完整版）
     if already_pushed_today(latest_nav_date):
         print("⏭️ 今日该净值已推送过完整日报，跳过推送（如需强制推送请设 FORCE_PUSH=1）")
     else:
-        _dingtalk_post({"msgtype": "markdown", "markdown": {"title": title, "text": report_md}})
+        push_dingtalk_daily(copy, title, report_md)
 
     # 2. 更新 egg-data.json（H5 页面数据源，只写确认有净值的产品）
     update_egg_data(egg_results, latest_nav_date, copy, no_nav=no_nav)
