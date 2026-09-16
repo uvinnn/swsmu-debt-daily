@@ -236,7 +236,7 @@ def already_pushed_today(nav_date):
     return False
 
 
-def update_egg_data(egg_results, nav_date, copy_text):
+def update_egg_data(egg_results, nav_date, copy_text, no_nav=None):
     """更新 egg-data.json（历史累积格式，H5 页面读取）"""
     today_str = date.today().strftime("%Y-%m-%d")
 
@@ -259,6 +259,10 @@ def update_egg_data(egg_results, nav_date, copy_text):
         ],
         "copy": copy_text
     }
+
+    # 记录"净值未出、未纳入文案"的产品，留痕备查（绝不按 0 蛋计入）
+    if no_nav:
+        today_record["no_nav"] = no_nav
 
     # 读取现有数据
     existing = {"records": []}
@@ -342,7 +346,8 @@ def main():
     today_str = today.strftime("%Y-%m-%d")
 
     egg_results = []
-    missing = []
+    missing = []      # 数据源里完全找不到该产品
+    no_nav = []       # 产品存在，但拿不到当日净值（真实收益未知，绝不能按 0 蛋算）
 
     for code, name, is_priority, sort_order in TARGET_FUNDS:
         found = None
@@ -365,8 +370,11 @@ def main():
                 growth_rate = f_rate
                 print(f"    ↳ 批量接口无当日数据，备用接口补齐：{f_date} {f_rate}%")
             else:
-                print(f"    ↳ 备用接口也无当日数据（最新 {f_date}），按 0 蛋处理")
-                growth_rate = "0"
+                # 两个数据源都没有当日净值 → 真实收益未知，绝不臆造为 0 蛋，直接剔除并上报
+                no_nav.append(f"{name}（{code}）")
+                print(f"  ⚠️ {code} {name}: 两个数据源均无 {latest_nav_date} 的净值，"
+                      f"真实收益未知，不参与今日文案（备用接口最新 {f_date}）")
+                continue
 
         egg = parse_egg_count(growth_rate)
 
@@ -383,32 +391,48 @@ def main():
         print(f"  {code} {name}: {growth_rate}% → {egg}蛋")
 
     if missing:
-        print(f"\n⚠️ 以下产品未找到数据: {', '.join(missing)}")
-        if len(missing) > 2:
-            print("❌ 缺失数据过多，本次不生成文案")
-            send_dingtalk(f"❌ 债基数据抓取失败\n缺失数据过多: {', '.join(missing)}\n请手动检查。")
-            sys.exit(1)
+        print(f"\n⚠️ 数据源中未找到以下产品: {', '.join(missing)}")
+
+    if no_nav:
+        print(f"\n⚠️ 以下产品今日({latest_nav_date})净值未出，真实收益未知，已从文案中剔除: {', '.join(no_nav)}")
+
+    # 缺失过多（找不到 + 净值未出）视为抓取失败，不生成文案
+    if len(missing) + len(no_nav) > 2:
+        detail = []
+        if missing:
+            detail.append("数据源缺失: " + ", ".join(missing))
+        if no_nav:
+            detail.append("净值未出: " + ", ".join(no_nav))
+        print("❌ 缺失数据过多，本次不生成文案")
+        send_dingtalk("❌ 债基数据抓取失败\n" + "\n".join(detail) + "\n请手动检查。")
+        sys.exit(1)
 
     # 净值日期检查
     if today_str not in latest_nav_date:
         print(f"⚠️ 净值日期({latest_nav_date})不是今天({today_str})，数据可能尚未更新")
         sys.exit(2)
 
-    # 生成文案
+    # 生成文案（只用确认拿到当日净值的产品）
     copy = build_copy(egg_results)
 
     print("\n" + "=" * 50)
     print(copy)
     print("=" * 50)
 
+    # 钉钉正文：有产品净值未出时，明确写出来，绝不静默略过
+    ding_text = copy
+    if no_nav:
+        ding_text += ("\n\n⚠️ 注意：以下产品今日净值未公布，真实收益未知，"
+                      "已从上面的收蛋文案中剔除（非 0 蛋）：\n" + "、".join(no_nav))
+
     # 1. 推送到钉钉（同一天同一份净值只推一次，避免重复打扰）
-    if already_pushed_today(latest_nav_date):
+    if already_pushed_today(latest_nav_date) and not no_nav:
         print("⏭️ 今日该净值已推送过钉钉，跳过推送（如需强制推送请设 FORCE_PUSH=1）")
     else:
-        send_dingtalk(copy)
+        send_dingtalk(ding_text)
 
-    # 2. 更新 egg-data.json（H5 页面数据源）
-    update_egg_data(egg_results, latest_nav_date, copy)
+    # 2. 更新 egg-data.json（H5 页面数据源，只写确认有净值的产品）
+    update_egg_data(egg_results, latest_nav_date, copy, no_nav=no_nav)
 
 
 def run_with_retry():
