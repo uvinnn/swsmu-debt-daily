@@ -132,6 +132,34 @@ def fetch_fund_data():
     return datas, showday
 
 
+def fetch_latest_growth(code):
+    """
+    备用数据源：从天天基金「单只基金历史净值」接口取最新一日增长率。
+    用途：批量接口对部分产品（如暂停申购的 019046）不返回当日净值字段，
+          直接用会误判成 0 蛋，这里兜底补齐。
+    返回 (净值日期, 日增长率字符串)，取不到返回 (None, None)
+    """
+    url = (f"https://api.fund.eastmoney.com/f10/lsjz?fundCode={code}"
+           f"&pageIndex=1&pageSize=5&callback=cb")
+    req = urllib.request.Request(url, headers={
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+        "Referer": "http://fund.eastmoney.com/",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            txt = resp.read().decode("utf-8", "replace").strip()
+        if txt.startswith("cb("):
+            txt = txt[3:]
+        if txt.endswith(")"):
+            txt = txt[:-1]
+        lst = json.loads(txt)["Data"]["LSJZList"]
+        if lst:
+            return lst[0].get("FSRQ"), lst[0].get("JZZZL")
+    except Exception as e:
+        print(f"    备用接口异常: {e}")
+    return None, None
+
+
 def parse_egg_count(growth_rate_str):
     """将日增长率字符串转换为收蛋数（1bp = 1蛋）"""
     try:
@@ -329,6 +357,17 @@ def main():
             continue
 
         growth_rate = found[8] if len(found) > 8 else "0"
+
+        # 批量接口当日字段为空（常见于暂停申购产品）→ 用单只净值接口兜底补齐
+        if not str(growth_rate).strip():
+            f_date, f_rate = fetch_latest_growth(code)
+            if f_date == latest_nav_date and str(f_rate).strip() not in ("", "None"):
+                growth_rate = f_rate
+                print(f"    ↳ 批量接口无当日数据，备用接口补齐：{f_date} {f_rate}%")
+            else:
+                print(f"    ↳ 备用接口也无当日数据（最新 {f_date}），按 0 蛋处理")
+                growth_rate = "0"
+
         egg = parse_egg_count(growth_rate)
 
         egg_results.append({
