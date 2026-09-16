@@ -185,6 +185,29 @@ def send_dingtalk(text):
             return False
 
 
+def already_pushed_today(nav_date):
+    """
+    判断今天这份净值数据是否已经推送过（避免同一天重复发钉钉）。
+    判定条件：egg-data.json 中已存在 date=今天 且 nav_date 相同的记录。
+    设置环境变量 FORCE_PUSH=1 可强制再次推送。
+    """
+    if os.environ.get("FORCE_PUSH") == "1":
+        return False
+    if not os.path.exists(EGG_DATA_PATH):
+        return False
+    try:
+        with open(EGG_DATA_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return False
+
+    today_str = date.today().strftime("%Y-%m-%d")
+    for rec in data.get("records", []):
+        if rec.get("date") == today_str and rec.get("nav_date") == nav_date:
+            return True
+    return False
+
+
 def update_egg_data(egg_results, nav_date, copy_text):
     """更新 egg-data.json（历史累积格式，H5 页面读取）"""
     today_str = date.today().strftime("%Y-%m-%d")
@@ -339,8 +362,11 @@ def main():
     print(copy)
     print("=" * 50)
 
-    # 1. 推送到钉钉
-    send_dingtalk(copy)
+    # 1. 推送到钉钉（同一天同一份净值只推一次，避免重复打扰）
+    if already_pushed_today(latest_nav_date):
+        print("⏭️ 今日该净值已推送过钉钉，跳过推送（如需强制推送请设 FORCE_PUSH=1）")
+    else:
+        send_dingtalk(copy)
 
     # 2. 更新 egg-data.json（H5 页面数据源）
     update_egg_data(egg_results, latest_nav_date, copy)
