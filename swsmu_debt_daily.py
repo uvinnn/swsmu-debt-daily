@@ -180,8 +180,8 @@ def build_copy(egg_results):
     return TEMPLATE.format(product_list="\n".join(lines))
 
 
-def send_dingtalk(text):
-    """通过钉钉群机器人发送消息（加签模式）"""
+def _dingtalk_post(payload):
+    """通过钉钉群机器人发送消息（加签模式），payload 为完整消息体 dict"""
     if not DINGTALK_WEBHOOK or not DINGTALK_SECRET:
         print("⚠️ 未配置钉钉 Webhook，跳过推送")
         return False
@@ -195,10 +195,7 @@ def send_dingtalk(text):
 
     url = f"{DINGTALK_WEBHOOK}&timestamp={timestamp}&sign={sign}"
 
-    data = json.dumps({
-        "msgtype": "text",
-        "text": {"content": text}
-    }).encode('utf-8')
+    data = json.dumps(payload).encode('utf-8')
 
     req = urllib.request.Request(url, data=data, headers={
         "Content-Type": "application/json",
@@ -211,6 +208,49 @@ def send_dingtalk(text):
         else:
             print(f"❌ 钉钉推送失败: {result}")
             return False
+
+
+def send_dingtalk(text):
+    """发送纯文本消息（用于失败/延迟告警）"""
+    return _dingtalk_post({"msgtype": "text", "text": {"content": text}})
+
+
+H5_URL = "https://uvinnn.github.io/swsmu-debt-daily/egg-tracker.html"
+
+
+def build_daily_report(egg_results, nav_date, no_nav=None):
+    """
+    构建钉钉「收蛋日报」卡片（markdown）。
+    样式对齐线上历史版本：
+      🐔 收蛋日报 | YYYY-MM-DD
+      今日合计收 X 蛋
+      - 🔴 产品 收 N 蛋   （正收益红点）
+      - ⚫ 产品 收 0 蛋   （零收益黑点）
+      - 🟢 产品 碎 N 蛋   （负收益绿点）
+      👉 查看详情（跳转 H5 追踪页）
+    """
+    egg_results = sorted(egg_results, key=lambda x: (-x["egg"], x["sort_order"]))
+    total = sum(r["egg"] for r in egg_results if r["egg"] > 0)
+
+    lines = []
+    for r in egg_results:
+        if r["egg"] > 0:
+            lines.append(f"- 🔴 {r['name']} 收 {r['egg']} 蛋")
+        elif r["egg"] == 0:
+            lines.append(f"- ⚫ {r['name']} 收 0 蛋")
+        else:
+            lines.append(f"- 🟢 {r['name']} 碎 {abs(r['egg'])} 蛋")
+
+    md = f"### 🐔 收蛋日报 | {nav_date}\n\n"
+    md += f"**今日合计收 {total} 蛋**\n\n"
+    md += "\n".join(lines) + "\n\n"
+    if no_nav:
+        md += (f"⚠️ {('、'.join(no_nav))} 今日净值未公布，真实收益未知，"
+               f"未计入本日报（非 0 蛋）\n\n")
+    md += f"👉 [查看详情]({H5_URL})"
+
+    title = f"🐔 收蛋日报 | {nav_date}"
+    return title, md
 
 
 def already_pushed_today(nav_date):
@@ -232,7 +272,8 @@ def already_pushed_today(nav_date):
     today_str = date.today().strftime("%Y-%m-%d")
     for rec in data.get("records", []):
         if rec.get("date") == today_str and rec.get("nav_date") == nav_date:
-            return True
+            # 之前推的日报缺产品（no_nav 非空）→ 不算推完，允许数据齐了补推完整版
+            return not rec.get("no_nav")
     return False
 
 
@@ -412,24 +453,33 @@ def main():
         print(f"⚠️ 净值日期({latest_nav_date})不是今天({today_str})，数据可能尚未更新")
         sys.exit(2)
 
-    # 生成文案（只用确认拿到当日净值的产品）
+    # 部分产品净值未出时的重试策略：
+    # 重试模式下先等数据（exit 2 触发重试），临近截止才按现有数据出部分日报
+    if no_nav and os.environ.get("RETRY_MODE") == "1":
+        cutoff = datetime.now().replace(hour=20, minute=28, second=0, microsecond=0)
+        if datetime.now() < cutoff:
+            print(f"⏳ {', '.join(no_nav)} 净值未出，重试模式下等待数据（截止 20:30）...")
+            sys.exit(2)
+        print("⚠️ 已近截止，按现有数据出部分日报，缺失产品将在日报中注明")
+
+    # 生成文案（蚂蚁财富号投放用，只用确认拿到当日净值的产品）
     copy = build_copy(egg_results)
 
     print("\n" + "=" * 50)
     print(copy)
     print("=" * 50)
 
-    # 钉钉正文：有产品净值未出时，明确写出来，绝不静默略过
-    ding_text = copy
-    if no_nav:
-        ding_text += ("\n\n⚠️ 注意：以下产品今日净值未公布，真实收益未知，"
-                      "已从上面的收蛋文案中剔除（非 0 蛋）：\n" + "、".join(no_nav))
+    # 钉钉推送「收蛋日报」卡片
+    title, report_md = build_daily_report(egg_results, latest_nav_date, no_nav)
+    print("\n----- 钉钉收蛋日报预览 -----")
+    print(report_md)
+    print("---------------------------")
 
-    # 1. 推送到钉钉（同一天同一份净值只推一次，避免重复打扰）
-    if already_pushed_today(latest_nav_date) and not no_nav:
-        print("⏭️ 今日该净值已推送过钉钉，跳过推送（如需强制推送请设 FORCE_PUSH=1）")
+    # 1. 推送到钉钉（同一天同一份净值只推一次；上次缺产品的日报允许补推完整版）
+    if already_pushed_today(latest_nav_date):
+        print("⏭️ 今日该净值已推送过完整日报，跳过推送（如需强制推送请设 FORCE_PUSH=1）")
     else:
-        send_dingtalk(ding_text)
+        _dingtalk_post({"msgtype": "markdown", "markdown": {"title": title, "text": report_md}})
 
     # 2. 更新 egg-data.json（H5 页面数据源，只写确认有净值的产品）
     update_egg_data(egg_results, latest_nav_date, copy, no_nav=no_nav)
@@ -444,6 +494,7 @@ def run_with_retry():
     截止后仍失败则发钉钉告警并退出（exit code=3）
     """
     retry_interval = 300
+    os.environ["RETRY_MODE"] = "1"   # 告诉 main()：部分产品净值未出时先重试，别急着出部分日报
 
     attempt = 0
     while True:
@@ -466,7 +517,16 @@ def run_with_retry():
         elif code == 2:
             cutoff = now.replace(hour=20, minute=30, second=0, microsecond=0)
             if now > cutoff:
-                print("[重试模式] ⏰ 已到 20:30 截止，放弃重试")
+                # 截止前最后兜底：以非重试模式再跑一次，有多少数据发多少（缺失产品会注明）
+                print("[重试模式] ⏰ 已到 20:30 截止，做最后一次尝试（能发多少发多少）")
+                os.environ.pop("RETRY_MODE", None)
+                try:
+                    main()
+                    sys.exit(0)
+                except SystemExit as e:
+                    code = e.code if e.code is not None else 1
+                if code == 0:
+                    sys.exit(0)
                 send_dingtalk("⚠️ 今晚净值数据延迟更新，截至20:30尚未获取到今日数据，请手动检查。")
                 sys.exit(3)
             print(f"[重试模式] ⏳ 净值未更新，{retry_interval}秒后重试（截止 20:30）...")
