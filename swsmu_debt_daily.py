@@ -169,6 +169,25 @@ def parse_egg_count(growth_rate_str):
     return int(round(rate * 100))
 
 
+def format_change(growth_rate):
+    """把日增长率统一格式化为 +0.02% / -0.02% / 0.00%
+
+    历史脏数据里出现过 '+-0.02'、'--0.01' 这类双符号，H5 用 parseFloat 判定涨跌配色
+    时会得到 NaN 而显示成灰色，所以这里把开头连续的 +/- 折叠成单个符号。
+    """
+    s = str(growth_rate).strip().replace('%', '').replace(' ', '')
+    s = re.sub(r'^[+\-]+', lambda m: '-' if '-' in m.group(0) else '+', s)
+    try:
+        val = float(s)
+    except (ValueError, TypeError):
+        return f"{s}%"
+    if val > 0:
+        return f"+{val:.2f}%"
+    if val < 0:
+        return f"-{abs(val):.2f}%"
+    return "0.00%"
+
+
 def build_copy(egg_results):
     """生成最终文案，按蛋数从高到低，同蛋数按 sort_order"""
     egg_results.sort(key=lambda x: (-x["egg"], x["sort_order"]))
@@ -294,7 +313,7 @@ def update_egg_data(egg_results, nav_date, copy_text, no_nav=None):
                 "code": r["code"],
                 "name": r["name"],
                 "eggs": r["egg"],
-                "change": f"{'+' if r['growth_rate'] and float(r['growth_rate']) > 0 else ''}{r['growth_rate']}%"
+                "change": format_change(r["growth_rate"])
             }
             for r in sorted_results
         ],
