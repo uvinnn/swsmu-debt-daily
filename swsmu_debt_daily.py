@@ -2,7 +2,8 @@
 """
 申万菱信债基每日收蛋文案自动生成器
 数据来源：天天基金公开 API（https://fund.eastmoney.com）
-触发时间：每天 20:00，失败重试至 20:30
+部署环境：GitHub Actions（每天 20:00 北京时间自动运行）
+推送渠道：钉钉群机器人 + egg-data.json（供 H5 页面读取）
 """
 
 import re
@@ -10,27 +11,32 @@ import json
 import sys
 import os
 import time
+import hmac
+import hashlib
+import base64
 import urllib.request
+import urllib.parse
 from datetime import datetime, date
 
 # ============================================================
 # 配置
 # ============================================================
 
-# 目标产品列表（同蛋数时按下表顺序排列，即 sort_order 升序）
-# 依据用户2026-05-28提供的文案示例确定顺序
+# 目标产品列表（同蛋数时按 sort_order 升序排列）
+# 排序规则：蛋数高→低，同蛋数主推产品优先，然后非主推
+# 主推4只顺序：稳鑫30天A → 稳鑫60天A → 稳鑫90天A → 申万菱信季季瑞A
 TARGET_FUNDS = [
-    ("022061", "申万菱信季季瑞A", True, 1),
-    ("015489", "稳鑫30天A", True, 2),
-    ("011986", "申万菱信合利C", False, 3),
-    ("005990", "安泰惠利C", False, 4),
+    ("015489", "稳鑫30天A", True, 1),
+    ("016748", "稳鑫60天A", True, 2),
+    ("015923", "稳鑫90天A", True, 3),
+    ("022061", "申万菱信季季瑞A", True, 4),
     ("007240", "安泰瑞利C", False, 5),
-    ("016748", "稳鑫60天A", True, 6),
-    ("015923", "稳鑫90天A", True, 7),
+    ("011986", "申万菱信合利C", False, 6),
+    ("005990", "安泰惠利C", False, 7),
     ("019046", "安泰裕利C", False, 8),
 ]
 
-# 天天基金 API（申万菱信基金公司代码：80045188）
+# 天天基金 API
 API_URL = (
     "https://fund.eastmoney.com/Data/Fund_JJJZ_Data.aspx"
     "?t=1&lx=1&letter=&gsid=80045188&sort=zdf,desc&page=1,200"
@@ -44,17 +50,16 @@ TEMPLATE = """💡闲钱理财债短情长，小顾家的债基今天也来给�
 📚讨论区活动福利多多，小伙伴们关注起来！
 💖欢迎大家持续关注~"""
 
-# 输出目录
-OUTPUT_DIR = r"C:\Users\admin\WorkBuddy\2026-05-28-21-29-18\.workbuddy\output"
+# 钉钉机器人配置（从环境变量读取）
+DINGTALK_WEBHOOK = os.environ.get("DINGTALK_WEBHOOK", "")
+DINGTALK_SECRET = os.environ.get("DINGTALK_SECRET", "")
+
+# egg-data.json 路径
+EGG_DATA_PATH = "egg-data.json"
 
 
 def fetch_fund_data():
-    """
-    从天天基金 API 抓取申万菱信全部基金净值数据。
-    返回 (datas_list, showday_list)
-    API 返回格式：var db={datas:[...], showday:[...], ...}
-    datas 中每行结构: [代码, 名称, 拼音, 净值, 累计净值, 前日净值, 前日累计净值, 日增长额, 日增长率%, ...]
-    """
+    """从天天基金 API 抓取申万菱信全部基金净值数据。"""
     req = urllib.request.Request(API_URL, headers={
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
         "Referer": "https://fund.eastmoney.com/",
@@ -68,10 +73,9 @@ def fetch_fund_data():
     if sd_match:
         showday = eval(sd_match.group(1))
 
-    # 提取 datas 数组 —— 找到 "datas:[" 然后手动解析每行
+    # 提取 datas 数组
     datas = []
     datas_start = raw.index('datas:[') + len('datas:')
-    # 找到 datas 数组的结束位置
     depth = 0
     datas_end = datas_start
     for i in range(datas_start, len(raw)):
@@ -86,21 +90,17 @@ def fetch_fund_data():
 
     datas_str = raw[datas_start:datas_end]
 
-    # 用正则提取每行数组（每行以 [ 开头，] 结尾）
     row_pattern = re.compile(r'\[([^\]]*(?:\[[^\]]*\][^\]]*)*)\]')
     for m in row_pattern.finditer(datas_str):
         row_str = m.group(1)
-        # 解析 CSV 风格的字段（引号包裹的字符串和数字）
         fields = []
         i = 0
         while i < len(row_str):
-            # 跳过空白
             while i < len(row_str) and row_str[i] in ' \t\n\r':
                 i += 1
             if i >= len(row_str):
                 break
             if row_str[i] == '"':
-                # 引号包裹的字符串
                 j = i + 1
                 while j < len(row_str):
                     if row_str[j] == '\\':
@@ -115,7 +115,6 @@ def fetch_fund_data():
                 fields.append('')
                 i += 1
             else:
-                # 非引号字段
                 j = i
                 while j < len(row_str) and row_str[j] != ',':
                     j += 1
@@ -125,7 +124,6 @@ def fetch_fund_data():
                 else:
                     fields.append(val)
                 i = j
-            # 跳过逗号
             while i < len(row_str) and row_str[i] == ',':
                 i += 1
         if fields:
@@ -140,11 +138,11 @@ def parse_egg_count(growth_rate_str):
         rate = float(growth_rate_str)
     except (ValueError, TypeError):
         return 0
-    return int(round(rate * 100))  # 例如 0.02% → 2 蛋
+    return int(round(rate * 100))
 
 
 def build_copy(egg_results):
-    """根据收蛋结果生成最终文案，按蛋数从高到低，同蛋数按固定展示顺序"""
+    """生成最终文案，按蛋数从高到低，同蛋数按 sort_order"""
     egg_results.sort(key=lambda x: (-x["egg"], x["sort_order"]))
 
     lines = []
@@ -154,16 +152,143 @@ def build_copy(egg_results):
     return TEMPLATE.format(product_list="\n".join(lines))
 
 
+def send_dingtalk(text):
+    """通过钉钉群机器人发送消息（加签模式）"""
+    if not DINGTALK_WEBHOOK or not DINGTALK_SECRET:
+        print("⚠️ 未配置钉钉 Webhook，跳过推送")
+        return False
+
+    timestamp = str(round(time.time() * 1000))
+    secret_enc = DINGTALK_SECRET.encode('utf-8')
+    string_to_sign = f'{timestamp}\n{DINGTALK_SECRET}'
+    string_to_sign_enc = string_to_sign.encode('utf-8')
+    hmac_code = hmac.new(secret_enc, string_to_sign_enc, digestmod=hashlib.sha256).digest()
+    sign = urllib.parse.quote_plus(base64.b64encode(hmac_code))
+
+    url = f"{DINGTALK_WEBHOOK}&timestamp={timestamp}&sign={sign}"
+
+    data = json.dumps({
+        "msgtype": "text",
+        "text": {"content": text}
+    }).encode('utf-8')
+
+    req = urllib.request.Request(url, data=data, headers={
+        "Content-Type": "application/json",
+    })
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        result = json.loads(resp.read().decode('utf-8'))
+        if result.get("errcode") == 0:
+            print("✅ 钉钉推送成功")
+            return True
+        else:
+            print(f"❌ 钉钉推送失败: {result}")
+            return False
+
+
+def update_egg_data(egg_results, nav_date, copy_text):
+    """更新 egg-data.json（历史累积格式，H5 页面读取）"""
+    today_str = date.today().strftime("%Y-%m-%d")
+
+    # 排序后构建当日记录
+    sorted_results = sorted(egg_results, key=lambda x: (-x["egg"], x["sort_order"]))
+    total_eggs = sum(r["egg"] for r in sorted_results if r["egg"] > 0)
+
+    today_record = {
+        "date": today_str,
+        "nav_date": nav_date,
+        "total": total_eggs,
+        "results": [
+            {
+                "code": r["code"],
+                "name": r["name"],
+                "eggs": r["egg"],
+                "change": f"{'+' if r['growth_rate'] and float(r['growth_rate']) > 0 else ''}{r['growth_rate']}%"
+            }
+            for r in sorted_results
+        ],
+        "copy": copy_text
+    }
+
+    # 读取现有数据
+    existing = {"records": []}
+    if os.path.exists(EGG_DATA_PATH):
+        try:
+            with open(EGG_DATA_PATH, "r", encoding="utf-8") as f:
+                existing = json.load(f)
+        except Exception:
+            existing = {"records": []}
+
+    records = existing.get("records", [])
+
+    # 替换同一天的数据，否则插入
+    replaced = False
+    for i, rec in enumerate(records):
+        if rec.get("date") == today_str:
+            records[i] = today_record
+            replaced = True
+            break
+    if not replaced:
+        records.insert(0, today_record)
+
+    # 按日期降序，保留最多 90 天
+    records.sort(key=lambda r: r.get("date", ""), reverse=True)
+    records = records[:90]
+
+    with open(EGG_DATA_PATH, "w", encoding="utf-8") as f:
+        json.dump({"records": records}, f, ensure_ascii=False, indent=2)
+
+    print(f"✅ egg-data.json 已更新（共 {len(records)} 条记录）")
+
+
+def is_trading_day(check_date):
+    """
+    判断是否为A股交易日。
+    - 周六/周日直接返回 False
+    - 其余通过 timor.club 节假日 API 确认是否为节假日
+    - API 不可用时，回退到仅跳过周末（宁可多发不漏发）
+    """
+    # 先排除周末
+    if check_date.weekday() >= 5:  # 5=周六, 6=周日
+        return False
+
+    # 查询节假日 API（timor.club，免费，无需 key）
+    try:
+        date_str = check_date.strftime("%Y%m%d")
+        url = f"https://timor.tech/api/holiday/info/{date_str}"
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        # type: 0=工作日, 1=周末, 2=节假日, 3=调休（本是休息日但需上班）
+        day_type = data.get("type", {}).get("type")
+        if day_type == 3:
+            # 调休工作日（本是周末但要上班），债基正常交易
+            return True
+        if day_type in (1, 2):
+            # 周末或法定节假日
+            return False
+        # type==0 或 API 返回异常，视为工作日
+        return True
+    except Exception as e:
+        print(f"  ⚠️ 节假日 API 查询失败 ({e})，按工作日处理")
+        return True
+
+
 def main():
+    today = date.today()
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 开始抓取基金净值数据...")
+
+    # 非交易日直接退出（不发钉钉，不更新数据）
+    if not is_trading_day(today):
+        weekday_name = ["周一","周二","周三","周四","周五","周六","周日"][today.weekday()]
+        print(f"📅 今天是 {today.strftime('%Y-%m-%d')} {weekday_name}，非交易日，跳过执行。")
+        sys.exit(0)
 
     all_data, showday = fetch_fund_data()
     print(f"  获取到 {len(all_data)} 条基金数据")
     print(f"  净值日期: {showday}")
 
-    # 用 showday[0] 作为最新净值日期
     latest_nav_date = showday[0] if showday else "未知"
-    today_str = date.today().strftime("%Y-%m-%d")
+    today_str = today.strftime("%Y-%m-%d")
 
     egg_results = []
     missing = []
@@ -180,7 +305,7 @@ def main():
             print(f"  ⚠️ {code} {name}: 未找到数据")
             continue
 
-        growth_rate = found[8] if len(found) > 8 else "0"  # 字段索引 8 = 日增长率
+        growth_rate = found[8] if len(found) > 8 else "0"
         egg = parse_egg_count(growth_rate)
 
         egg_results.append({
@@ -195,14 +320,14 @@ def main():
 
         print(f"  {code} {name}: {growth_rate}% → {egg}蛋")
 
-    # 缺失数据检查
     if missing:
         print(f"\n⚠️ 以下产品未找到数据: {', '.join(missing)}")
         if len(missing) > 2:
             print("❌ 缺失数据过多，本次不生成文案")
+            send_dingtalk(f"❌ 债基数据抓取失败\n缺失数据过多: {', '.join(missing)}\n请手动检查。")
             sys.exit(1)
 
-    # 净值日期检查：如果不是今天的数据，认为还未更新，退出重试
+    # 净值日期检查
     if today_str not in latest_nav_date:
         print(f"⚠️ 净值日期({latest_nav_date})不是今天({today_str})，数据可能尚未更新")
         sys.exit(2)
@@ -214,23 +339,11 @@ def main():
     print(copy)
     print("=" * 50)
 
-    # 保存结果文件
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    # 1. 推送到钉钉
+    send_dingtalk(copy)
 
-    output_path = os.path.join(OUTPUT_DIR, "swsmu_daily_copy.txt")
-    with open(output_path, "w", encoding="utf-8") as f:
-        f.write(copy)
-    print(f"\n✅ 文案已保存到: {output_path}")
-
-    json_path = os.path.join(OUTPUT_DIR, "swsmu_daily_data.json")
-    with open(json_path, "w", encoding="utf-8") as f:
-        json.dump({
-            "date": today_str,
-            "nav_date": latest_nav_date,
-            "results": egg_results,
-            "copy": copy,
-        }, f, ensure_ascii=False, indent=2)
-    print(f"✅ 数据已保存到: {json_path}")
+    # 2. 更新 egg-data.json（H5 页面数据源）
+    update_egg_data(egg_results, latest_nav_date, copy)
 
 
 def run_with_retry():
@@ -241,7 +354,7 @@ def run_with_retry():
     - 其他 exit code：脚本异常，直接退出
     截止后仍失败则发钉钉告警并退出（exit code=3）
     """
-    retry_interval = 300  # 5 分钟
+    retry_interval = 300
 
     attempt = 0
     while True:
@@ -249,7 +362,6 @@ def run_with_retry():
         now = datetime.now()
         print(f"\n[重试模式] === 第 {attempt} 次尝试 {now.strftime('%Y-%m-%d %H:%M:%S')} ===")
 
-        # 直接调用 main 函数（而非子进程），用 try/except 捕获 SystemExit
         code = 0
         try:
             main()
@@ -263,57 +375,16 @@ def run_with_retry():
             print("[重试模式] ✅ 成功！")
             sys.exit(0)
         elif code == 2:
-            # 计算截止时间（当天 20:30）
             cutoff = now.replace(hour=20, minute=30, second=0, microsecond=0)
-
             if now > cutoff:
-                print(f"[重试模式] ⏰ 已到 20:30 截止，放弃重试")
-                _send_dingtalk_warning()
+                print("[重试模式] ⏰ 已到 20:30 截止，放弃重试")
+                send_dingtalk("⚠️ 今晚净值数据延迟更新，截至20:30尚未获取到今日数据，请手动检查。")
                 sys.exit(3)
-
-            wait_secs = retry_interval
-            print(f"[重试模式] ⏳ 净值未更新，{wait_secs}秒后重试（截止 20:30）...")
-            time.sleep(wait_secs)
+            print(f"[重试模式] ⏳ 净值未更新，{retry_interval}秒后重试（截止 20:30）...")
+            time.sleep(retry_interval)
         else:
             print(f"[重试模式] ❌ 脚本异常退出 (exit code: {code})")
             sys.exit(code)
-
-
-def _send_dingtalk_warning():
-    """发送钉钉告警：净值延迟"""
-    try:
-        import hmac
-        import hashlib
-        import base64
-        import urllib.parse
-
-        webhook = os.environ.get("DINGTALK_WEBHOOK", "")
-        secret = os.environ.get("DINGTALK_SECRET", "")
-        if not webhook:
-            print("[告警] 未配置 DINGTALK_WEBHOOK，跳过钉钉通知")
-            return
-
-        timestamp = str(round(time.time() * 1000))
-        msg = f"{timestamp}\n{secret}"
-        sign = urllib.parse.quote_plus(
-            base64.b64encode(
-                hmac.new(secret.encode("utf-8"), msg.encode("utf-8"), hashlib.sha256).digest()
-            )
-        )
-        url = f"{webhook}&timestamp={timestamp}&sign={sign}"
-        body = json.dumps({
-            "msgtype": "text",
-            "text": {"content": "⚠️ 今晚净值数据延迟更新，截至20:30尚未获取到今日数据，请手动检查。"}
-        }).encode("utf-8")
-        req = urllib.request.Request(
-            url, data=body,
-            headers={"Content-Type": "application/json"},
-            method="POST"
-        )
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            print(f"[告警] 钉钉通知已发送: {resp.status}")
-    except Exception as e:
-        print(f"[告警] 发送钉钉通知失败: {e}")
 
 
 if __name__ == "__main__":
