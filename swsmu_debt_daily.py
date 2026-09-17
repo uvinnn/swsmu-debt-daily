@@ -64,10 +64,13 @@ COPY_ONLY = "--copy-only" in sys.argv or os.environ.get("COPY_ONLY") == "1"
 
 def fetch_fund_data():
     """从天天基金 API 抓取申万菱信全部基金净值数据。"""
-    req = urllib.request.Request(API_URL, headers={
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-        "Referer": "https://fund.eastmoney.com/",
-    })
+    # 带 _=时间戳 防 CDN 缓存（重试模式下同一 URL 可能被缓存，读到旧净值日期）
+    req = urllib.request.Request(
+        API_URL + f"&_={int(time.time() * 1000)}",
+        headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+            "Referer": "https://fund.eastmoney.com/",
+        })
     with urllib.request.urlopen(req, timeout=30) as resp:
         raw = resp.read().decode("gbk", errors="replace")
 
@@ -143,8 +146,9 @@ def fetch_latest_growth(code):
           直接用会误判成 0 蛋，这里兜底补齐。
     返回 (净值日期, 日增长率字符串)，取不到返回 (None, None)
     """
+    # 带 _=时间戳 防 CDN 缓存：净值刚公布时缓存可能还停在昨天，会误判"未出"
     url = (f"https://api.fund.eastmoney.com/f10/lsjz?fundCode={code}"
-           f"&pageIndex=1&pageSize=5&callback=cb")
+           f"&pageIndex=1&pageSize=5&callback=cb&_={int(time.time() * 1000)}")
     req = urllib.request.Request(url, headers={
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
         "Referer": "http://fund.eastmoney.com/",
@@ -198,7 +202,10 @@ def build_copy(egg_results):
 
     lines = []
     for item in egg_results:
-        lines.append(f"【{item['name']}】收{item['egg']}蛋；")
+        if item["egg"] >= 0:
+            lines.append(f"【{item['name']}】收{item['egg']}蛋；")
+        else:
+            lines.append(f"【{item['name']}】碎{abs(item['egg'])}蛋；")
 
     return TEMPLATE.format(product_list="\n".join(lines))
 
