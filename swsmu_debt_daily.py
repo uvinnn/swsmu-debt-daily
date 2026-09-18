@@ -497,6 +497,16 @@ def main():
         if no_nav:
             detail.append("净值未出: " + ", ".join(no_nav))
         print("❌ 缺失数据过多，本次不生成文案")
+        # 重试模式下：净值日期可能已切到今天、只是明细刷出慢（如批量接口已显示
+        # 明天日期但当日增长率为空），此时不该告警收场，而是等下一轮重试。
+        # exit 4 = "数据不齐但值得重试"，由 run_with_retry 统一处理；
+        # 20:28 临界之后仍缺，才真正告警收场。
+        if os.environ.get("RETRY_MODE") == "1":
+            cutoff = datetime.now().replace(hour=20, minute=28, second=0, microsecond=0)
+            if datetime.now() < cutoff:
+                print(f"⏳ 重试模式下暂不告警，等待下一轮重试（截止 20:30）..."
+                      f"当前缺失 {len(missing) + len(no_nav)} 只")
+                sys.exit(4)
         send_dingtalk("❌ 债基数据抓取失败\n" + "\n".join(detail) + "\n请手动检查。")
         sys.exit(1)
 
@@ -545,6 +555,7 @@ def run_with_retry():
     内置重试模式：从调用时刻起，每 5 分钟重试一次，直到成功或 20:30 截止。
     - exit code=0：成功，退出
     - exit code=2：净值未更新，等待重试
+    - exit code=4：数据不齐（净值明细刷出慢），等待重试
     - 其他 exit code：脚本异常，直接退出
     截止后仍失败则发钉钉告警并退出（exit code=3）
     """
@@ -569,7 +580,7 @@ def run_with_retry():
         if code == 0:
             print("[重试模式] ✅ 成功！")
             sys.exit(0)
-        elif code == 2:
+        elif code in (2, 4):
             cutoff = now.replace(hour=20, minute=30, second=0, microsecond=0)
             if now > cutoff:
                 # 截止前最后兜底：以非重试模式再跑一次，有多少数据发多少（缺失产品会注明）
@@ -582,9 +593,9 @@ def run_with_retry():
                     code = e.code if e.code is not None else 1
                 if code == 0:
                     sys.exit(0)
-                send_dingtalk("⚠️ 今晚净值数据延迟更新，截至20:30尚未获取到今日数据，请手动检查。")
+                send_dingtalk("⚠️ 今晚净值数据延迟更新，截至20:30尚未获取到足量数据，请手动检查。")
                 sys.exit(3)
-            print(f"[重试模式] ⏳ 净值未更新，{retry_interval}秒后重试（截止 20:30）...")
+            print(f"[重试模式] ⏳ 数据未齐，{retry_interval}秒后重试（截止 20:30）...")
             time.sleep(retry_interval)
         else:
             print(f"[重试模式] ❌ 脚本异常退出 (exit code: {code})")
