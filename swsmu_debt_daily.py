@@ -16,7 +16,24 @@ import hashlib
 import base64
 import urllib.request
 import urllib.parse
-from datetime import datetime, date
+from datetime import datetime, date, timedelta, timezone
+
+# ============================================================
+# 时间基准：一律用北京时间
+# ============================================================
+# 重要：GitHub Actions 的 runner 时钟是 UTC，若直接用本机时间会差 8 小时，
+# 导致重试截止/静默时段/日期判断全部错位（曾把北京 09:13 误判成"凌晨静默时段"）。
+BJ_TZ = timezone(timedelta(hours=8))
+
+
+def bjnow():
+    """当前北京时间"""
+    return datetime.now(BJ_TZ)
+
+
+def bj_today():
+    """当前北京日期"""
+    return bjnow().date()
 
 # ============================================================
 # 配置
@@ -81,14 +98,14 @@ EARLY_PUSH_HOUR, EARLY_PUSH_MINUTE = 20, 15
 
 def retry_cutoff(now=None):
     """今日重试截止时间"""
-    now = now or datetime.now()
+    now = now or bjnow()
     return now.replace(hour=RETRY_CUTOFF_HOUR, minute=RETRY_CUTOFF_MINUTE,
                        second=0, microsecond=0)
 
 
 def in_quiet_hours(now=None):
     """是否处于深夜静默时段"""
-    now = now or datetime.now()
+    now = now or bjnow()
     return now.hour >= QUIET_FROM_HOUR or now.hour < QUIET_TO_HOUR
 
 
@@ -335,10 +352,26 @@ def push_dingtalk_daily(copy_text, title, report_md):
     return ok_copy and ok_report
 
 
-def already_pushed_today(nav_date):
+def has_record_today(nav_date):
+    """今天是否已经为这份净值写过记录（无论完整与否，用于避免重复推部分版）"""
+    if not os.path.exists(EGG_DATA_PATH):
+        return False
+    try:
+        with open(EGG_DATA_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return False
+    today_str = bj_today().strftime("%Y-%m-%d")
+    return any(rec.get("date") == today_str and rec.get("nav_date") == nav_date
+               for rec in data.get("records", []))
+
+
+def already_pushed_today(nav_date, no_nav=None):
     """
     判断今天这份净值数据是否已经推送过（避免同一天重复发钉钉）。
-    判定条件：egg-data.json 中已存在 date=今天 且 nav_date 相同的记录。
+    判定条件：egg-data.json 中已存在 date=今天 且 nav_date 相同的记录，
+    且「缺失清单」与本次一致 —— 只在数据有进展（补齐了产品）时才允许补推，
+    否则多时段运行会把同一份部分版重复推好几次。
     设置环境变量 FORCE_PUSH=1 可强制再次推送。
     """
     if os.environ.get("FORCE_PUSH") == "1":
@@ -351,17 +384,19 @@ def already_pushed_today(nav_date):
     except Exception:
         return False
 
-    today_str = date.today().strftime("%Y-%m-%d")
+    today_str = bj_today().strftime("%Y-%m-%d")
+    cur_missing = set(no_nav or [])
     for rec in data.get("records", []):
         if rec.get("date") == today_str and rec.get("nav_date") == nav_date:
-            # 之前推的日报缺产品（no_nav 非空）→ 不算推完，允许数据齐了补推完整版
-            return not rec.get("no_nav")
+            prev_missing = set(rec.get("no_nav") or [])
+            # 与上次推的内容完全一样 → 跳过；有进展（缺失变少/变多）→ 允许再推
+            return cur_missing == prev_missing
     return False
 
 
 def update_egg_data(egg_results, nav_date, copy_text, no_nav=None):
     """更新 egg-data.json（历史累积格式，H5 页面读取）"""
-    today_str = date.today().strftime("%Y-%m-%d")
+    today_str = bj_today().strftime("%Y-%m-%d")
 
     # 排序后构建当日记录
     sorted_results = sorted(egg_results, key=lambda x: (-x["egg"], x["sort_order"]))
@@ -452,14 +487,14 @@ def is_trading_day(check_date):
 
 
 def main():
-    today = date.today()
-    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 开始抓取基金净值数据...")
+    today = bj_today()
+    print(f"[{bjnow().strftime('%Y-%m-%d %H:%M:%S')}] 开始抓取基金净值数据...")
 
     # 深夜静默保护：GitHub cron 高峰期会把 20:00 的任务延迟到凌晨才跑，
     # 那种运行数据已过时，只静默退出，不推送、不告警（避免深夜打扰用户）。
     if (not COPY_ONLY and os.environ.get("FORCE_PUSH") != "1"
             and os.environ.get("ALLOW_QUIET") != "1" and in_quiet_hours()):
-        print(f"🌙 当前 {datetime.now().strftime('%H:%M')} 属静默时段（延迟触发的运行），"
+        print(f"🌙 当前 {bjnow().strftime('%H:%M')} 属静默时段（延迟触发的运行），"
               f"跳过推送与告警，数据由次日任务统一处理。")
         sys.exit(0)
 
@@ -541,7 +576,7 @@ def main():
         # exit 4 = "数据不齐但值得重试"，由 run_with_retry 统一处理；
         # 截止之后仍缺，才真正告警收场。
         if os.environ.get("RETRY_MODE") == "1":
-            if datetime.now() < retry_cutoff():
+            if bjnow() < retry_cutoff():
                 print(f"⏳ 重试模式下暂不告警，等待下一轮重试（截止 "
                       f"{RETRY_CUTOFF_HOUR}:{RETRY_CUTOFF_MINUTE:02d}）..."
                       f"当前缺失 {len(missing) + len(no_nav)} 只")
@@ -558,17 +593,24 @@ def main():
         print(f"⚠️ 净值日期({latest_nav_date})不是今天({today_str})，数据可能尚未更新")
         sys.exit(2)
 
-    # 部分产品净值未出时的策略：过了早推时点就先推部分版（标注缺谁），
-    # 后续时段/补推任务自动用完整版覆盖（去重逻辑允许）
+    # 部分产品净值未出时的策略：过了早推时点先推一版部分版（标注缺谁），
+    # 之后不再重复推同样的部分版，静默重试到数据补齐（或截止）再推最终版
     if no_nav and os.environ.get("RETRY_MODE") == "1":
-        now = datetime.now()
+        now = bjnow()
         early = now.replace(hour=EARLY_PUSH_HOUR, minute=EARLY_PUSH_MINUTE,
                             second=0, microsecond=0)
         if now < early:
             print(f"⏳ {', '.join(no_nav)} 净值未出，等数据陆续刷出"
                   f"（{EARLY_PUSH_HOUR}:{EARLY_PUSH_MINUTE:02d} 后仍缺就先推部分版）...")
             sys.exit(2)
-        if now < retry_cutoff():
+        if has_record_today(latest_nav_date):
+            if now < retry_cutoff():
+                print(f"⏳ 今日已推过部分版，{', '.join(no_nav)} 仍未出，"
+                      f"静默重试到数据补齐（截止 "
+                      f"{RETRY_CUTOFF_HOUR}:{RETRY_CUTOFF_MINUTE:02d}）...")
+                sys.exit(2)
+            print("⚠️ 已到截止时间，出最终版（若与已推内容相同会自动跳过推送）")
+        else:
             print(f"⚠️ 已过 {EARLY_PUSH_HOUR}:{EARLY_PUSH_MINUTE:02d}，"
                   f"{', '.join(no_nav)} 仍未出 → 先推现有部分版（已在文案/日报中注明），"
                   f"数据齐后自动补推完整版")
@@ -595,8 +637,8 @@ def main():
         print(f"② 收蛋日报（markdown）\n{report_md}")
         print("-------------------------------")
 
-    if already_pushed_today(latest_nav_date):
-        print("⏭️ 今日该净值已推送过完整日报，跳过推送（如需强制推送请设 FORCE_PUSH=1）")
+    if already_pushed_today(latest_nav_date, no_nav):
+        print("⏭️ 今日该净值已推送过同样内容，跳过推送（如需强制推送请设 FORCE_PUSH=1）")
     else:
         push_dingtalk_daily(copy, title, report_md)
 
@@ -619,7 +661,7 @@ def run_with_retry():
     attempt = 0
     while True:
         attempt += 1
-        now = datetime.now()
+        now = bjnow()
         print(f"\n[重试模式] === 第 {attempt} 次尝试 {now.strftime('%Y-%m-%d %H:%M:%S')} ===")
 
         code = 0
@@ -647,7 +689,10 @@ def run_with_retry():
                     code = e.code if e.code is not None else 1
                 if code == 0:
                     sys.exit(0)
-                send_dingtalk(f"⚠️ 今晚净值数据延迟更新，截至 {RETRY_CUTOFF_HOUR}:"
+                if in_quiet_hours():
+                    print("[重试模式] 🌙 当前属静默时段，不发送深夜告警。")
+                    sys.exit(3)
+                send_dingtalk(f"⚠️ 当晚净值数据延迟更新，截至 {RETRY_CUTOFF_HOUR}:"
                               f"{RETRY_CUTOFF_MINUTE:02d} 尚未获取到足量数据，请手动检查。")
                 sys.exit(3)
             print(f"[重试模式] ⏳ 数据未齐，{retry_interval}秒后重试（截止 "
