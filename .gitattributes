@@ -1,0 +1,2 @@
+# shell 脚本一律保持 LF，避免 Windows 上被转成 CRLF 后 bash 执行报错（$'\r': command not found）
+*.sh text eol=lf
