@@ -61,6 +61,36 @@ EGG_DATA_PATH = "egg-data.json"
 # 注意：只影响控制台输出，钉钉仍然照常推「口播 + 日报」两条
 COPY_ONLY = "--copy-only" in sys.argv or os.environ.get("COPY_ONLY") == "1"
 
+# ---- 运行时间窗口（北京时间）----
+# 净值明细刷出越来越晚（近期常常 20:30 之后才陆续出、极端到 21:46 才齐），
+# 重试截止从 20:30 后移到 21:45，避免"数据其实会出、但脚本已经放弃"。
+RETRY_CUTOFF_HOUR, RETRY_CUTOFF_MINUTE = 21, 45
+
+# 深夜静默时段：GitHub 的 cron 高峰期可能把 20:00 的任务延迟到凌晨才真正执行，
+# 那种运行既拿不到有效数据、又会在深夜往钉钉推告警，所以直接静默退出。
+# FORCE_PUSH=1（人工更正重推）和 --copy-only（本地/对话手动跑）不受限制。
+QUIET_FROM_HOUR, QUIET_TO_HOUR = 22, 7
+
+# 出文案的最低数据量：8 只里至少 5 只有净值就先出文案（缺的在文案/日报里点名），
+# 早给一版远好过让用户干等——完整版随后自动补推（去重逻辑允许"缺产品的版本"被完整版覆盖）。
+MIN_FUNDS_FOR_COPY = 5
+
+# 早推时点：过了这个点数据还不齐，就先推现有部分版，不再干等到 21:45 截止
+EARLY_PUSH_HOUR, EARLY_PUSH_MINUTE = 20, 15
+
+
+def retry_cutoff(now=None):
+    """今日重试截止时间"""
+    now = now or datetime.now()
+    return now.replace(hour=RETRY_CUTOFF_HOUR, minute=RETRY_CUTOFF_MINUTE,
+                       second=0, microsecond=0)
+
+
+def in_quiet_hours(now=None):
+    """是否处于深夜静默时段"""
+    now = now or datetime.now()
+    return now.hour >= QUIET_FROM_HOUR or now.hour < QUIET_TO_HOUR
+
 
 def fetch_fund_data():
     """从天天基金 API 抓取申万菱信全部基金净值数据。"""
@@ -425,6 +455,14 @@ def main():
     today = date.today()
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 开始抓取基金净值数据...")
 
+    # 深夜静默保护：GitHub cron 高峰期会把 20:00 的任务延迟到凌晨才跑，
+    # 那种运行数据已过时，只静默退出，不推送、不告警（避免深夜打扰用户）。
+    if (not COPY_ONLY and os.environ.get("FORCE_PUSH") != "1"
+            and os.environ.get("ALLOW_QUIET") != "1" and in_quiet_hours()):
+        print(f"🌙 当前 {datetime.now().strftime('%H:%M')} 属静默时段（延迟触发的运行），"
+              f"跳过推送与告警，数据由次日任务统一处理。")
+        sys.exit(0)
+
     # 非交易日直接退出（不发钉钉，不更新数据）
     if not is_trading_day(today):
         weekday_name = ["周一","周二","周三","周四","周五","周六","周日"][today.weekday()]
@@ -489,40 +527,56 @@ def main():
     if no_nav:
         print(f"\n⚠️ 以下产品今日({latest_nav_date})净值未出，真实收益未知，已从文案中剔除: {', '.join(no_nav)}")
 
-    # 缺失过多（找不到 + 净值未出）视为抓取失败，不生成文案
-    if len(missing) + len(no_nav) > 2:
+    # 数据不足（找不到 + 净值未出）：有效产品太少就不出文案，避免把残缺版推出去
+    available = len(egg_results)
+    if available < MIN_FUNDS_FOR_COPY and not COPY_ONLY:
         detail = []
         if missing:
             detail.append("数据源缺失: " + ", ".join(missing))
         if no_nav:
             detail.append("净值未出: " + ", ".join(no_nav))
-        print("❌ 缺失数据过多，本次不生成文案")
+        print(f"❌ 有效数据仅 {available} 只（不足 {MIN_FUNDS_FOR_COPY} 只），本次不生成文案")
         # 重试模式下：净值日期可能已切到今天、只是明细刷出慢（如批量接口已显示
         # 明天日期但当日增长率为空），此时不该告警收场，而是等下一轮重试。
         # exit 4 = "数据不齐但值得重试"，由 run_with_retry 统一处理；
-        # 20:28 临界之后仍缺，才真正告警收场。
+        # 截止之后仍缺，才真正告警收场。
         if os.environ.get("RETRY_MODE") == "1":
-            cutoff = datetime.now().replace(hour=20, minute=28, second=0, microsecond=0)
-            if datetime.now() < cutoff:
-                print(f"⏳ 重试模式下暂不告警，等待下一轮重试（截止 20:30）..."
+            if datetime.now() < retry_cutoff():
+                print(f"⏳ 重试模式下暂不告警，等待下一轮重试（截止 "
+                      f"{RETRY_CUTOFF_HOUR}:{RETRY_CUTOFF_MINUTE:02d}）..."
                       f"当前缺失 {len(missing) + len(no_nav)} 只")
                 sys.exit(4)
         send_dingtalk("❌ 债基数据抓取失败\n" + "\n".join(detail) + "\n请手动检查。")
         sys.exit(1)
+    elif available < MIN_FUNDS_FOR_COPY:
+        # 手动/对话模式：不管几只，都给出现有数据（宁早勿等），并明确标注
+        print(f"⚠️ 手动模式：仅 {available}/8 只有净值，先按现有数据出部分版"
+              f"（仅供预览，建议等齐再投放）")
 
     # 净值日期检查
     if today_str not in latest_nav_date:
         print(f"⚠️ 净值日期({latest_nav_date})不是今天({today_str})，数据可能尚未更新")
         sys.exit(2)
 
-    # 部分产品净值未出时的重试策略：
-    # 重试模式下先等数据（exit 2 触发重试），临近截止才按现有数据出部分日报
+    # 部分产品净值未出时的策略：过了早推时点就先推部分版（标注缺谁），
+    # 后续时段/补推任务自动用完整版覆盖（去重逻辑允许）
     if no_nav and os.environ.get("RETRY_MODE") == "1":
-        cutoff = datetime.now().replace(hour=20, minute=28, second=0, microsecond=0)
-        if datetime.now() < cutoff:
-            print(f"⏳ {', '.join(no_nav)} 净值未出，重试模式下等待数据（截止 20:30）...")
+        now = datetime.now()
+        early = now.replace(hour=EARLY_PUSH_HOUR, minute=EARLY_PUSH_MINUTE,
+                            second=0, microsecond=0)
+        if now < early:
+            print(f"⏳ {', '.join(no_nav)} 净值未出，等数据陆续刷出"
+                  f"（{EARLY_PUSH_HOUR}:{EARLY_PUSH_MINUTE:02d} 后仍缺就先推部分版）...")
             sys.exit(2)
-        print("⚠️ 已近截止，按现有数据出部分日报，缺失产品将在日报中注明")
+        if now < retry_cutoff():
+            print(f"⚠️ 已过 {EARLY_PUSH_HOUR}:{EARLY_PUSH_MINUTE:02d}，"
+                  f"{', '.join(no_nav)} 仍未出 → 先推现有部分版（已在文案/日报中注明），"
+                  f"数据齐后自动补推完整版")
+
+    # 一只都没有：直接说明未公布，不生成空文案
+    if not egg_results:
+        print(f"⚠️ {latest_nav_date} 的净值一条都没拿到，今日不生成文案。")
+        sys.exit(2)
 
     # 生成文案（蚂蚁财富号投放用，只用确认拿到当日净值的产品）
     copy = build_copy(egg_results)
@@ -552,7 +606,7 @@ def main():
 
 def run_with_retry():
     """
-    内置重试模式：从调用时刻起，每 5 分钟重试一次，直到成功或 20:30 截止。
+    内置重试模式：从调用时刻起，每 5 分钟重试一次，直到成功或 21:45 截止。
     - exit code=0：成功，退出
     - exit code=2：净值未更新，等待重试
     - exit code=4：数据不齐（净值明细刷出慢），等待重试
@@ -581,10 +635,10 @@ def run_with_retry():
             print("[重试模式] ✅ 成功！")
             sys.exit(0)
         elif code in (2, 4):
-            cutoff = now.replace(hour=20, minute=30, second=0, microsecond=0)
-            if now > cutoff:
+            if now > retry_cutoff():
                 # 截止前最后兜底：以非重试模式再跑一次，有多少数据发多少（缺失产品会注明）
-                print("[重试模式] ⏰ 已到 20:30 截止，做最后一次尝试（能发多少发多少）")
+                print(f"[重试模式] ⏰ 已到 {RETRY_CUTOFF_HOUR}:{RETRY_CUTOFF_MINUTE:02d} 截止，"
+                      f"做最后一次尝试（能发多少发多少）")
                 os.environ.pop("RETRY_MODE", None)
                 try:
                     main()
@@ -593,9 +647,11 @@ def run_with_retry():
                     code = e.code if e.code is not None else 1
                 if code == 0:
                     sys.exit(0)
-                send_dingtalk("⚠️ 今晚净值数据延迟更新，截至20:30尚未获取到足量数据，请手动检查。")
+                send_dingtalk(f"⚠️ 今晚净值数据延迟更新，截至 {RETRY_CUTOFF_HOUR}:"
+                              f"{RETRY_CUTOFF_MINUTE:02d} 尚未获取到足量数据，请手动检查。")
                 sys.exit(3)
-            print(f"[重试模式] ⏳ 数据未齐，{retry_interval}秒后重试（截止 20:30）...")
+            print(f"[重试模式] ⏳ 数据未齐，{retry_interval}秒后重试（截止 "
+                  f"{RETRY_CUTOFF_HOUR}:{RETRY_CUTOFF_MINUTE:02d}）...")
             time.sleep(retry_interval)
         else:
             print(f"[重试模式] ❌ 脚本异常退出 (exit code: {code})")

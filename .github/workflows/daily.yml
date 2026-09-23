@@ -2,8 +2,13 @@ name: 申万菱信债基每日收蛋
 
 on:
   schedule:
-    # 北京时间每天 20:00（UTC 12:00）
+    # 北京时间 20:00 / 20:30 / 21:00 三个时段兜底。
+    # GitHub 的 cron 在高峰期常被延迟（近期实测延迟 4~5 小时、甚至直接跳过），
+    # 单点 20:00 靠不住，所以铺三个时段：任一次跑成功即推送，
+    # 脚本内置去重（同一净值日只推一次完整版），多跑不会重复打扰。
     - cron: '0 12 * * *'
+    - cron: '30 12 * * *'
+    - cron: '0 13 * * *'
   workflow_dispatch:
     inputs:
       force_push:
@@ -11,14 +16,19 @@ on:
         type: boolean
         default: false
       with_retry:
-        description: '启用重试（净值未出时每5分钟重试至20:30）'
+        description: '启用重试（净值未出时每5分钟重试至21:45）'
         type: boolean
         default: false
+
+# 同一时间只跑一个，避免多个时段的运行互相覆盖 egg-data.json
+concurrency:
+  group: swsmu-debt-daily
+  cancel-in-progress: false
 
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 130
     permissions:
       contents: write
 
