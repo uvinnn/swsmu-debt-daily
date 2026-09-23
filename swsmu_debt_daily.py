@@ -437,6 +437,14 @@ def update_egg_data(egg_results, nav_date, copy_text, no_nav=None):
     replaced = False
     for i, rec in enumerate(records):
         if rec.get("date") == today_str:
+            # 防回退：本地已存的是更完整的版本（产品更多且无缺失），
+            # 本次却是部分版（产品更少 / 有 no_nav），则不覆盖，避免把完整记录写坏。
+            old_n, new_n = len(rec.get("results", [])), len(today_record["results"])
+            if old_n > new_n and not rec.get("no_nav"):
+                print(f"⏭️ 本地已有更完整记录（{old_n} 只 vs 本次 {new_n} 只），"
+                      f"保留旧记录不覆盖（如需强制请设 FORCE_PUSH=1）")
+                if os.environ.get("FORCE_PUSH") != "1":
+                    return
             records[i] = today_record
             replaced = True
             break
@@ -469,7 +477,7 @@ def is_trading_day(check_date):
         date_str = check_date.strftime("%Y%m%d")
         url = f"https://timor.tech/api/holiday/info/{date_str}"
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with urllib.request.urlopen(req, timeout=4) as resp:
             data = json.loads(resp.read().decode("utf-8"))
         # type: 0=工作日, 1=周末, 2=节假日, 3=调休（本是休息日但需上班）
         day_type = data.get("type", {}).get("type")
@@ -643,7 +651,13 @@ def main():
         push_dingtalk_daily(copy, title, report_md)
 
     # 2. 更新 egg-data.json（H5 页面数据源，只写确认有净值的产品）
-    update_egg_data(egg_results, latest_nav_date, copy, no_nav=no_nav)
+    #    --copy-only 是"只看看文案"的模式（对话/快速查看用），不落盘：
+    #    避免本地反复改写 egg-data.json 导致 git 工作区一直脏、pull/合并被阻塞。
+    #    数据落盘统一由云端 Actions 负责（它才是钉钉与 H5 的数据源）。
+    if COPY_ONLY:
+        print("ℹ️ --copy-only 模式：不写入 egg-data.json（数据由云端 Actions 落盘）")
+    else:
+        update_egg_data(egg_results, latest_nav_date, copy, no_nav=no_nav)
 
 
 def run_with_retry():
